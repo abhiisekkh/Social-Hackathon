@@ -112,6 +112,31 @@ class InteractivePathFinder(PathFinder):
             self.ax.plot([wall_col - 0.3, wall_col + 0.3], [wall_row - 0.3, wall_row + 0.3], 'r-', linewidth=3)
             self.ax.plot([wall_col - 0.3, wall_col + 0.3], [wall_row + 0.3, wall_row - 0.3], 'r-', linewidth=3)
         
+        # Draw alternate paths with dotted lines
+        if hasattr(self, 'algorithm_stats') and 'alternate_paths' in self.algorithm_stats:
+            for i, alt_path in enumerate(self.algorithm_stats['alternate_paths']):
+                path_coords = alt_path['path']
+                if len(path_coords) > 1:
+                    x_coords = [coord[1] for coord in path_coords]
+                    y_coords = [coord[0] for coord in path_coords]
+                    # Use different colors and dotted lines for alternate paths
+                    colors_alt = ['purple', 'orange', 'brown', 'pink']
+                    color = colors_alt[i % len(colors_alt)]
+                    self.ax.plot(x_coords, y_coords, color=color, linewidth=2, 
+                               linestyle='--', alpha=0.7, zorder=5,
+                               label=f'Alt Path {i+1} (L:{alt_path["length"]}, W:{alt_path["walls_broken"]})')
+        
+        # Draw optimal path with solid line (on top)
+        if len(self.path) > 1:
+            x_coords = [coord[1] for coord in self.path]
+            y_coords = [coord[0] for coord in self.path]
+            self.ax.plot(x_coords, y_coords, 'b-', linewidth=3, alpha=0.8, zorder=6,
+                        label=f'Optimal Path (L:{len(self.path)-1}, W:{len(self.broken_walls)})')
+        
+        # Add legend if there are multiple paths
+        if hasattr(self, 'algorithm_stats') and self.algorithm_stats.get('total_paths_found', 0) > 1:
+            self.ax.legend(loc='upper left', bbox_to_anchor=(0, 1), fontsize=8)
+        
         # Initialize character marker
         self.character_marker = self.ax.plot([], [], 'o', markersize=20, color='orange', 
                                            markeredgecolor='black', markeredgewidth=2, zorder=10)[0]
@@ -312,25 +337,36 @@ class InteractivePathFinder(PathFinder):
         animate_step()
     
     def find_shortest_path_with_analysis(self) -> Tuple[int, List[Tuple[int, int]], Set[Tuple[int, int]], dict]:
-        """Enhanced pathfinding with detailed algorithm analysis."""
+        """Enhanced pathfinding with detailed algorithm analysis and multiple path detection."""
         start_time = time.time()
         
-        if self.grid[0][0] == 1 or self.grid[self.n-1][self.n-1] == 1:
+        # Check if we can start - if start is a wall, we need to break it
+        start_walls_broken = 1 if self.grid[0][0] == 1 else 0
+        start_broken_walls = {(0, 0)} if self.grid[0][0] == 1 else set()
+        
+        # If we can't even break the starting wall, return -1
+        if start_walls_broken > self.k:
             return -1, [], set(), {}
         
         # Reset analysis data
         self.visited_states = {}
         self.exploration_order = []
+        self.all_paths = []  # Store all valid paths found
         
-        # BFS with state tracking
-        queue = deque([(0, 0, 0, [(0, 0)], set())])
-        self.visited_states[(0, 0, 0)] = 0
+        # Use priority queue to prioritize fewer walls broken first
+        # Priority: (walls_broken, path_length, row, col, path, broken_walls)
+        import heapq
+        queue = [(start_walls_broken, 0, 0, 0, [(0, 0)], start_broken_walls)]
+        heapq.heapify(queue)
+        self.visited_states[(0, 0, start_walls_broken)] = 0
         states_explored = 0
         max_queue_size = 1
+        optimal_length = float('inf')
+        optimal_walls = float('inf')
         
         while queue:
             max_queue_size = max(max_queue_size, len(queue))
-            row, col, walls_broken, path, broken_walls = queue.popleft()
+            walls_broken, path_length, row, col, path, broken_walls = heapq.heappop(queue)
             states_explored += 1
             
             # Track exploration order for visualization
@@ -338,25 +374,27 @@ class InteractivePathFinder(PathFinder):
             
             # Check if we reached the destination
             if row == self.n - 1 and col == self.n - 1:
-                end_time = time.time()
+                actual_path_length = len(path) - 1
+                walls_count = len(broken_walls)
                 
-                # Calculate algorithm statistics
-                self.algorithm_stats = {
-                    'execution_time': end_time - start_time,
-                    'states_explored': states_explored,
-                    'max_queue_size': max_queue_size,
-                    'total_possible_states': self.n * self.n * (self.k + 1),
-                    'state_space_efficiency': states_explored / (self.n * self.n * (self.k + 1)),
-                    'path_length': len(path) - 1,
-                    'walls_broken': len(broken_walls),
-                    'theoretical_time_complexity': f"O(N² × K) = O({self.n}² × {self.k}) = O({self.n * self.n * self.k})",
-                    'theoretical_space_complexity': f"O(N² × K) = O({self.n}² × {self.k}) = O({self.n * self.n * self.k})",
-                    'actual_states_visited': len(self.visited_states),
-                    'is_optimal': True,
-                    'algorithm': 'BFS with 3D State Space'
-                }
+                # Store this path
+                self.all_paths.append({
+                    'path': path.copy(),
+                    'broken_walls': broken_walls.copy(),
+                    'length': actual_path_length,
+                    'walls_broken': walls_count,
+                    'priority_score': walls_count * 1000 + actual_path_length  # Prioritize fewer walls, then shorter path
+                })
                 
-                return len(path) - 1, path, broken_walls, self.algorithm_stats
+                # Update optimal criteria
+                if walls_count < optimal_walls or (walls_count == optimal_walls and actual_path_length < optimal_length):
+                    optimal_walls = walls_count
+                    optimal_length = actual_path_length
+                
+                # Continue searching for more paths (but limit to avoid infinite search)
+                if len(self.all_paths) >= 5:  # Limit to 5 paths for performance
+                    break
+                continue
             
             # Explore all four directions
             for dr, dc in self.directions:
@@ -381,9 +419,36 @@ class InteractivePathFinder(PathFinder):
                     if state not in self.visited_states or self.visited_states[state] > current_steps:
                         self.visited_states[state] = current_steps
                         new_path = path + [(new_row, new_col)]
-                        queue.append((new_row, new_col, new_walls_broken, new_path, new_broken_walls))
+                        new_path_length = len(new_path) - 1
+                        heapq.heappush(queue, (new_walls_broken, new_path_length, new_row, new_col, new_path, new_broken_walls))
         
         end_time = time.time()
+        
+        # Process found paths
+        if self.all_paths:
+            # Sort paths by priority (fewer walls first, then shorter path)
+            self.all_paths.sort(key=lambda x: x['priority_score'])
+            optimal_path = self.all_paths[0]
+            
+            # Calculate algorithm statistics
+            self.algorithm_stats = {
+                'execution_time': end_time - start_time,
+                'states_explored': states_explored,
+                'max_queue_size': max_queue_size,
+                'total_possible_states': self.n * self.n * (self.k + 1),
+                'state_space_efficiency': states_explored / (self.n * self.n * (self.k + 1)),
+                'path_length': optimal_path['length'],
+                'walls_broken': optimal_path['walls_broken'],
+                'theoretical_time_complexity': f"O(N² × K) = O({self.n}² × {self.k}) = O({self.n * self.n * self.k})",
+                'theoretical_space_complexity': f"O(N² × K) = O({self.n}² × {self.k}) = O({self.n * self.n * self.k})",
+                'actual_states_visited': len(self.visited_states),
+                'is_optimal': True,
+                'algorithm': 'BFS with 3D State Space',
+                'total_paths_found': len(self.all_paths),
+                'alternate_paths': self.all_paths[1:] if len(self.all_paths) > 1 else []
+            }
+            
+            return optimal_path['length'], optimal_path['path'], optimal_path['broken_walls'], self.algorithm_stats
         
         # No path found statistics
         self.algorithm_stats = {
@@ -398,7 +463,9 @@ class InteractivePathFinder(PathFinder):
             'theoretical_space_complexity': f"O(N² × K) = O({self.n}² × {self.k}) = O({self.n * self.n * self.k})",
             'actual_states_visited': len(self.visited_states),
             'is_optimal': True,
-            'algorithm': 'BFS with 3D State Space'
+            'algorithm': 'BFS with 3D State Space',
+            'total_paths_found': 0,
+            'alternate_paths': []
         }
         
         return -1, [], set(), self.algorithm_stats
@@ -416,25 +483,41 @@ class InteractivePathFinder(PathFinder):
         y_pos = 0.9
         line_height = 0.09
         
+        # Get path information
+        total_paths = getattr(self.algorithm_stats, 'total_paths_found', 0) if hasattr(self, 'algorithm_stats') else 0
+        alt_paths = getattr(self.algorithm_stats, 'alternate_paths', []) if hasattr(self, 'algorithm_stats') else []
+        
         analysis_text = [
             f"Algorithm: BFS with 3D State Space",
             f"Time Complexity: O(N² × K) = O({self.n}² × {self.k})",
             f"Space Complexity: O(N² × K) = O({self.n}² × {self.k})",
             f"Optimality: Guaranteed Optimal",
             "",
+            "Path Analysis:",
+            f"  • Total Paths Found: {total_paths}",
+            f"  • Optimal Path Length: {len(self.path)-1 if self.path else 'N/A'}",
+            f"  • Optimal Walls Broken: {len(self.broken_walls)}/{self.k}",
+        ]
+        
+        # Add alternate path information
+        if alt_paths:
+            analysis_text.append("  • Alternate Paths:")
+            for i, alt_path in enumerate(alt_paths[:3]):  # Show max 3 alternates
+                analysis_text.append(f"    Path {i+2}: L={alt_path['length']}, W={alt_path['walls_broken']}")
+        
+        analysis_text.extend([
+            "",
             "Why BFS is Optimal:",
             "  • Explores states level by level",
-            "  • First path to goal = shortest path",
+            "  • Prioritizes fewer walls broken",
+            "  • Then prioritizes shorter path length",
             "  • State (r,c,k) = min steps to reach (r,c)",
-            "    with k walls broken",
             "",
             "Current Grid Analysis:",
             f"  • Grid Size: {self.n}×{self.n} = {self.n*self.n} cells",
             f"  • Max Wall Breaks: {self.k}",
-            f"  • Total States: {self.n*self.n*(self.k+1):,}",
-            f"  • Path Length: {len(self.path)-1 if self.path else 'N/A'}",
-            f"  • Walls Broken: {len(self.broken_walls)}/{self.k}"
-        ]
+            f"  • Total States: {self.n*self.n*(self.k+1):,}"
+        ])
         
         for i, text in enumerate(analysis_text):
             self.ax_analysis.text(0.02, y_pos - i * line_height, text, ha='left', va='top', 

@@ -37,14 +37,19 @@ class PathFinder:
             Tuple of (path_length, path_coordinates, broken_walls)
             Returns (-1, [], set()) if no path exists
         """
-        if self.grid[0][0] == 1 or self.grid[self.n-1][self.n-1] == 1:
+        # Check if we can start - if start is a wall, we need to break it
+        start_walls_broken = 1 if self.grid[0][0] == 1 else 0
+        start_broken_walls = {(0, 0)} if self.grid[0][0] == 1 else set()
+        
+        # If we can't even break the starting wall, return -1
+        if start_walls_broken > self.k:
             return -1, [], set()
         
         # State: (row, col, walls_broken, path, broken_walls_set)
-        queue = deque([(0, 0, 0, [(0, 0)], set())])
+        queue = deque([(0, 0, start_walls_broken, [(0, 0)], start_broken_walls)])
         # Visited: (row, col, walls_broken) -> minimum steps to reach this state
         visited = {}
-        visited[(0, 0, 0)] = 0
+        visited[(0, 0, start_walls_broken)] = 0
         
         while queue:
             row, col, walls_broken, path, broken_walls = queue.popleft()
